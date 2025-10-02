@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>双摆动力学系统模拟</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Arial', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        #container {
+            width: 100vw;
+            height: 100vh;
+        }
+        #controls {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            z-index: 100;
+            min-width: 280px;
+        }
+        h2 {
+            margin: 0 0 15px 0;
+            color: #333;
+            font-size: 20px;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 8px;
+        }
+        .control-group {
+            margin: 12px 0;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #555;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        button {
+            width: 100%;
+            padding: 10px;
+            margin: 5px 0;
+            border: none;
+            border-radius: 6px;
+            background: #667eea;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+        button:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        button:active {
+            transform: translateY(0);
+        }
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            margin: 10px 0;
+        }
+        input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            margin-right: 8px;
+            cursor: pointer;
+        }
+        .info {
+            font-size: 12px;
+            color: #666;
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #ddd;
+        }
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        input[type="range"] {
+            flex: 1;
+        }
+        .slider-value {
+            min-width: 40px;
+            text-align: right;
+            font-weight: 600;
+            color: #667eea;
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    <div id="controls">
+        <h2>🎯 双摆控制面板</h2>
+        
+        <div class="control-group">
+            <button id="resetBtn">重置双摆</button>
+            <button id="randomBtn">随机初始位置</button>
+        </div>
+        
+        <div class="checkbox-group">
+            <input type="checkbox" id="traceToggle" checked>
+            <label for="traceToggle" style="margin: 0;">显示运动轨迹</label>
+        </div>
+        
+        <div class="control-group">
+            <label>重力加速度: <span class="slider-value" id="gravityValue">9.8</span> m/s²</label>
+            <input type="range" id="gravitySlider" min="5" max="15" step="0.1" value="9.8">
+        </div>
+        
+        <div class="info">
+            <strong>操作说明：</strong><br>
+            • 拖动摆球改变位置<br>
+            • 释放后观察混沌运动<br>
+            • 使用 Runge-Kutta 4 算法
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // ========== 物理参数 ==========
+        let g = 9.8;  // 重力加速度
+        const m1 = 1.0, m2 = 1.0;  // 两个摆球质量
+        const L1 = 2.0, L2 = 2.0;  // 两段摆臂长度
+        
+        // ========== 状态变量 ==========
+        let theta1 = Math.PI;  // 第一个摆的角度（从垂直向下开始）
+        let theta2 = Math.PI;  // 第二个摆的角度
+        let omega1 = 0;  // 第一个摆的角速度
+        let omega2 = 0;  // 第二个摆的角速度
+        
+        // ========== Three.js 场景设置 ==========
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x1a1a2e);
+        
+        const camera = new THREE.PerspectiveCamera(
+            75, 
+            window.innerWidth / window.innerHeight, 
+            0.1, 
+            1000
+        );
+        camera.position.set(0, 0, 8);
+        
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.getElementById('container').appendChild(renderer.domElement);
+        
+        // ========== 光照 ==========
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        
+        const pointLight = new THREE.PointLight(0xffffff, 0.8);
+        pointLight.position.set(5, 5, 5);
+        scene.add(pointLight);
+        
+        // ========== 固定点（支点）==========
+        const pivotGeometry = new THREE.SphereGeometry(0.1, 32, 32);
+        const pivotMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff });
+        const pivot = new THREE.Mesh(pivotGeometry, pivotMaterial);
+        scene.add(pivot);
+        
+        // ========== 第一个摆球 ==========
+        const ball1Geometry = new THREE.SphereGeometry(0.2, 32, 32);
+        const ball1Material = new THREE.MeshStandardMaterial({ 
+            color: 0xff6b6b,
+            metalness: 0.3,
+            roughness: 0.4
+        });
+        const ball1 = new THREE.Mesh(ball1Geometry, ball1Material);
+        scene.add(ball1);
+        
+        // ========== 第二个摆球 ==========
+        const ball2Geometry = new THREE.SphereGeometry(0.2, 32, 32);
+        const ball2Material = new THREE.MeshStandardMaterial({ 
+            color: 0x4ecdc4,
+            metalness: 0.3,
+            roughness: 0.4
+        });
+        const ball2 = new THREE.Mesh(ball2Geometry, ball2Material);
+        scene.add(ball2);
+        
+        // ========== 摆臂 ==========
+        const rodMaterial = new THREE.LineBasicMaterial({ 
+            color: 0xffffff, 
+            linewidth: 2 
+        });
+        
+        const rod1Geometry = new THREE.BufferGeometry();
+        const rod1 = new THREE.Line(rod1Geometry, rodMaterial);
+        scene.add(rod1);
+        
+        const rod2Geometry = new THREE.BufferGeometry();
+        const rod2 = new THREE.Line(rod2Geometry, rodMaterial);
+        scene.add(rod2);
+        
+        // ========== 轨迹 ==========
+        let traceEnabled = true;
+        const maxTracePoints = 1000;
+        const tracePoints = [];
+        const traceGeometry = new THREE.BufferGeometry();
+        const traceMaterial = new THREE.LineBasicMaterial({ 
+            color: 0x4ecdc4,
+            transparent: true,
+            opacity: 0.6
+        });
+        const traceLine = new THREE.Line(traceGeometry, traceMaterial);
+        scene.add(traceLine);
+        
+        // ========== 拖拽相关 ==========
+        let isDragging = false;
+        let draggedBall = null;
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        
+        // ========== 双摆动力学方程（拉格朗日方程）==========
+        // 返回 [dtheta1/dt, domega1/dt, dtheta2/dt, domega2/dt]
+        function derivatives(t1, w1, t2, w2) {
+            const delta = t2 - t1;
+            const den1 = (m1 + m2) * L1 - m2 * L1 * Math.cos(delta) * Math.cos(delta);
+            const den2 = (L2 / L1) * den1;
+            
+            const dw1 = (m2 * L1 * w1 * w1 * Math.sin(delta) * Math.cos(delta)
+                        + m2 * g * Math.sin(t2) * Math.cos(delta)
+                        + m2 * L2 * w2 * w2 * Math.sin(delta)
+                        - (m1 + m2) * g * Math.sin(t1)) / den1;
+            
+            const dw2 = (-m2 * L2 * w2 * w2 * Math.sin(delta) * Math.cos(delta)
+                        + (m1 + m2) * g * Math.sin(t1) * Math.cos(delta)
+                        - (m1 + m2) * L1 * w1 * w1 * Math.sin(delta)
+                        - (m1 + m2) * g * Math.sin(t2)) / den2;
+            
+            return [w1, dw1, w2, dw2];
+        }
+        
+        // ========== Runge-Kutta 4阶数值积分 ==========
+        function rungeKutta4(dt) {
+            // k1
+            const k1 = derivatives(theta1, omega1, theta2, omega2);
+            
+            // k2
+            const k2 = derivatives(
+                theta1 + 0.5 * dt * k1[0],
+                omega1 + 0.5 * dt * k1[1],
+                theta2 + 0.5 * dt * k1[2],
+                omega2 + 0.5 * dt * k1[3]
+            );
+            
+            // k3
+            const k3 = derivatives(
+                theta1 + 0.5 * dt * k2[0],
+                omega1 + 0.5 * dt * k2[1],
+                theta2 + 0.5 * dt * k2[2],
+                omega2 + 0.5 * dt * k2[3]
+            );
+            
+            // k4
+            const k4 = derivatives(
+                theta1 + dt * k3[0],
+                omega1 + dt * k3[1],
+                theta2 + dt * k3[2],
+                omega2 + dt * k3[3]
+            );
+            
+            // 更新状态
+            theta1 += (dt / 6.0) * (k1[0] + 2*k2[0] + 2*k3[0] + k4[0]);
+            omega1 += (dt / 6.0) * (k1[1] + 2*k2[1] + 2*k3[1] + k4[1]);
+            theta2 += (dt / 6.0) * (k1[2] + 2*k2[2] + 2*k3[2] + k4[2]);
+            omega2 += (dt / 6.0) * (k1[3] + 2*k2[3] + 2*k3[3] + k4[3]);
+        }
+        
+        // ========== 根据角度计算位置 ==========
+        function updatePositions() {
+            const x1 = L1 * Math.sin(theta1);
+            const y1 = -L1 * Math.cos(theta1);
+            
+            const x2 = x1 + L2 * Math.sin(theta2);
+            const y2 = y1 - L2 * Math.cos(theta2);
+            
+            ball1.position.set(x1, y1, 0);
+            ball2.position.set(x2, y2, 0);
+            
+            // 更新摆臂
+            rod1Geometry.setFromPoints([
+                new THREE.Vector3(0, 0, 0),
+                new THREE.Vector3(x1, y1, 0)
+            ]);
+            
+            rod2Geometry.setFromPoints([
+                new THREE.Vector3(x1, y1, 0),
+                new THREE.Vector3(x2, y2, 0)
+            ]);
+            
+            // 更新轨迹
+            if (traceEnabled && !isDragging) {
+                tracePoints.push(new THREE.Vector3(x2, y2, 0));
+                if (tracePoints.length > maxTracePoints) {
+                    tracePoints.shift();
+                }
+                traceGeometry.setFromPoints(tracePoints);
+            }
+        }
+        
+        // ========== 鼠标事件 ==========
+        function onMouseDown(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects([ball1, ball2]);
+            
+            if (intersects.length > 0) {
+                isDragging = true;
+                draggedBall = intersects[0].object;
+                omega1 = 0;
+                omega2 = 0;
+            }
+        }
+        
+        function onMouseMove(event) {
+            if (!isDragging) return;
+            
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            
+            raycaster.setFromCamera(mouse, camera);
+            const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+            const intersectPoint = new THREE.Vector3();
+            raycaster.ray.intersectPlane(plane, intersectPoint);
+            
+            if (draggedBall === ball1) {
+                // 拖动第一个球
+                const dx = intersectPoint.x;
+                const dy = intersectPoint.y;
+                theta1 = Math.atan2(dx, -dy);
+                
+                // 保持第二个球的相对角度
+                const currentDelta = theta2 - theta1;
+                theta2 = theta1 + currentDelta;
+            } else if (draggedBall === ball2) {
+                // 拖动第二个球
+                const x1 = L1 * Math.sin(theta1);
+                const y1 = -L1 * Math.cos(theta1);
+                const dx = intersectPoint.x - x1;
+                const dy = intersectPoint.y - y1;
+                theta2 = Math.atan2(dx, -dy);
+            }
+            
+            updatePositions();
+        }
+        
+        function onMouseUp() {
+            isDragging = false;
+            draggedBall = null;
+        }
+        
+        renderer.domElement.addEventListener('mousedown', onMouseDown);
+        renderer.domElement.addEventListener('mousemove', onMouseMove);
+        renderer.domElement.addEventListener('mouseup', onMouseUp);
+        
+        // ========== 控制面板事件 ==========
+        document.getElementById('resetBtn').addEventListener('click', () => {
+            theta1 = Math.PI;
+            theta2 = Math.PI;
+            omega1 = 0;
+            omega2 = 0;
+            tracePoints.length = 0;
+            updatePositions();
+        });
+        
+        document.getElementById('randomBtn').addEventListener('click', () => {
+            theta1 = Math.random() * Math.PI * 2;
+            theta2 = Math.random() * Math.PI * 2;
+            omega1 = 0;
+            omega2 = 0;
+            tracePoints.length = 0;
+            updatePositions();
+        });
+        
+        document.getElementById('traceToggle').addEventListener('change', (e) => {
+            traceEnabled = e.target.checked;
+            if (!traceEnabled) {
+                tracePoints.length = 0;
+                traceGeometry.setFromPoints(tracePoints);
+            }
+        });
+        
+        document.getElementById('gravitySlider').addEventListener('input', (e) => {
+            g = parseFloat(e.target.value);
+            document.getElementById('gravityValue').textContent = g.toFixed(1);
+        });
+        
+        // ========== 窗口调整 ==========
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+        
+        // ========== 动画循环 ==========
+        let lastTime = Date.now();
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const currentTime = Date.now();
+            const dt = Math.min((currentTime - lastTime) / 1000, 0.02);
+            lastTime = currentTime;
+            
+            // 如果没有拖拽，进行物理模拟
+            if (!isDragging) {
+                // 使用较小的时间步长提高精度
+                const steps = 4;
+                for (let i = 0; i < steps; i++) {
+                    rungeKutta4(dt / steps);
+                }
+            }
+            
+            updatePositions();
+            renderer.render(scene, camera);
+        }
+        
+        // 初始化位置
+        updatePositions();
+        animate();
+    </script>
+</body>
+</html>
